@@ -251,360 +251,453 @@ const FamilyTree = () => {
     return familyData.nodes.filter(node => visibleNodesWithParents.has(node.id));
   };
 
+  const getResponsiveNodeRadius = (depth: number, screenWidth: number) => {
+    const isMobile = screenWidth < 768;
+    // Root node (depth 0) is 3 times larger
+    const baseRadius = (isMobile ? 45 : 60) * 3;
+    
+    if (depth === 0) {
+      return baseRadius; // Root node
+    }
+    
+    // Progressive reduction rates starting from 50% and decreasing by 5% each generation
+    const getReductionRate = (level: number) => {
+      const baseReduction = 0.50; // 50% reduction for first generation
+      const reductionDecrement = 0.05; // 5% less reduction each generation
+      const reduction = Math.max(baseReduction - (level - 1) * reductionDecrement, 0.15);
+      return 1 - reduction;
+    };
+
+    // Calculate size based on parent's size with progressive reduction
+    let currentSize = baseRadius;
+    for (let i = 1; i <= depth; i++) {
+      currentSize *= getReductionRate(i);
+    }
+    
+    return currentSize;
+  };
+
+  const getResponsiveFontSize = (depth: number, screenWidth: number) => {
+    const isMobile = screenWidth < 768;
+    // Base font size scaled by 2 (instead of 3 like nodes)
+    const baseSize = (isMobile ? 14 : 18) * 2;
+    
+    if (depth === 0) {
+      return baseSize; // Root node font
+    }
+    
+    // Use same reduction pattern as nodes but with slightly less dramatic reduction
+    const getReductionRate = (level: number) => {
+      const baseReduction = 0.45; // Start with 45% reduction (instead of 50%)
+      const reductionDecrement = 0.05;
+      const reduction = Math.max(baseReduction - (level - 1) * reductionDecrement, 0.15);
+      return 1 - reduction;
+    };
+
+    let currentSize = baseSize;
+    for (let i = 1; i <= depth; i++) {
+      currentSize *= getReductionRate(i);
+    }
+    
+    return currentSize;
+  };
+
   useEffect(() => {
     if (!svgRef.current || isLoading) return;
 
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const updateDimensions = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const isMobile = width < 768;
 
-    // Create SVG element
-    const svg = d3.select(svgRef.current)
-      .attr('width', width)
-      .attr('height', height);
+      // Update SVG dimensions - adjusted for smaller root node
+      const svg = d3.select(svgRef.current)
+        .attr('width', width * 1.1) // Reduced canvas size
+        .attr('height', height * 1.1);
 
-    // Clear previous content
-    svg.selectAll('*').remove();
+      // Clear previous content
+      svg.selectAll('*').remove();
 
-    // Get visible nodes based on user type
-    const visibleNodes = getVisibleNodes();
+      // Create a group for zoom/pan
+      const g = svg.append('g');
 
-    // Create a hierarchical layout
-    const hierarchy = d3.stratify<FamilyNode>()
-      .id(d => d.id)
-      .parentId(d => d.parentId)(visibleNodes);
+      // Add zoom behavior with different scale limits for mobile
+      const zoom = d3.zoom()
+        .scaleExtent([isMobile ? 0.1 : 0.15, isMobile ? 2 : 4])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+        });
 
-    // Create a tree layout
-    const treeLayout = d3.tree<FamilyNode>()
-      .size([width - 200, height - 200]);
+      svg.call(zoom);
+      
+      // Adjust initial scale for smaller root node
+      const rootNodeSize = getResponsiveNodeRadius(0, width);
+      const initialScale = isMobile ? 0.5 : 0.7; // Increased scale for better initial view
+      svg.call(zoom.transform, d3.zoomIdentity
+        .translate(width * 0.55, height * 0.55) // Adjusted for new canvas size
+        .scale(initialScale)
+        .translate(-width / 2, -height / 2));
 
-    const root = treeLayout(hierarchy);
+      // Get visible nodes based on user type
+      const visibleNodes = getVisibleNodes();
 
-    // Calculate initial positions based on tree layout
-    const nodes = root.descendants().map(d => ({
-      ...d.data,
-      x: d.x + width / 2,
-      y: d.y + 100,
-      depth: d.depth
-    }));
+      // Create a hierarchical layout
+      const hierarchy = d3.stratify<FamilyNode>()
+        .id(d => d.id)
+        .parentId(d => d.parentId)(visibleNodes);
 
-    const links = root.links().map(d => ({
-      source: nodes.find(n => n.id === d.source.data.id)!,
-      target: nodes.find(n => n.id === d.target.data.id)!
-    }));
+      // Create a tree layout with adjusted spacing
+      const treeLayout = d3.tree<FamilyNode>()
+        .size([
+          width, // Standard size
+          height
+        ]);
 
-    // Helper function to get node radius based on depth
-    const getNodeRadius = (depth: number) => {
-      const baseRadius = 50;
-      return Math.max(baseRadius * Math.pow(0.8, depth), 30);
-    };
+      const root = treeLayout(hierarchy);
 
-    // Helper function to get expand button radius
-    const getButtonRadius = (depth: number) => {
-      return getNodeRadius(depth) * 0.25;
-    };
+      // Calculate initial positions
+      const nodes = root.descendants().map(d => ({
+        ...d.data,
+        x: d.x + width / 2,
+        y: d.y + (isMobile ? 50 : 100),
+        depth: d.depth
+      }));
 
-    // Helper function to get button vertical offset
-    const getButtonOffset = (depth: number) => {
-      return getNodeRadius(depth) * 0.7; // Position below the node
-    };
+      const links = root.links().map(d => ({
+        source: nodes.find(n => n.id === d.source.data.id)!,
+        target: nodes.find(n => n.id === d.target.data.id)!
+      }));
 
-    // Helper function to get font size based on depth
-    const getNodeFontSize = (depth: number) => {
-      const baseSize = 16;
-      return Math.max(baseSize * Math.pow(0.9, depth), 12);
-    };
+      // Helper function to get node radius based on depth
+      const getNodeRadius = (depth: number) => {
+        const baseRadius = 50;
+        return Math.max(baseRadius * Math.pow(0.8, depth), 30);
+      };
 
-    const simulation = d3.forceSimulation<any>(nodes)
-      .force('link', d3.forceLink(links)
-        .id((d: any) => d.id)
-        .distance(200)) // Fixed longer distance
-      .force('charge', d3.forceManyBody().strength(-300))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(d => getNodeRadius(d.depth) + 30))
-      .force('x', d3.forceX().strength(0.1))
-      .force('y', d3.forceY().strength(0.1));
+      // Helper function to get expand button radius
+      const getButtonRadius = (depth: number) => {
+        return getNodeRadius(depth) * 0.25;
+      };
 
-    const defs = svg.append('defs');
+      // Helper function to get button vertical offset
+      const getButtonOffset = (depth: number) => {
+        return getNodeRadius(depth) * 0.7; // Position below the node
+      };
 
-    // Gradient for glossy effect
-    const gradient = defs.append('linearGradient')
-      .attr('id', 'glossGradient')
-      .attr('x1', '0%')
-      .attr('x2', '0%')
-      .attr('y1', '0%')
-      .attr('y2', '100%');
+      // Helper function to get font size based on depth
+      const getNodeFontSize = (depth: number) => {
+        const baseSize = 16;
+        return Math.max(baseSize * Math.pow(0.9, depth), 12);
+      };
 
-    gradient.append('stop')
-      .attr('offset', '0%')
-      .attr('style', 'stop-color:rgba(255,255,255,0.95);stop-opacity:0.95');
+      const simulation = d3.forceSimulation<any>(nodes)
+        .force('link', d3.forceLink(links)
+          .id((d: any) => d.id)
+          .distance(d => {
+            // Increase distance based on parent node size
+            const sourceRadius = getResponsiveNodeRadius(d.source.depth, width);
+            const targetRadius = getResponsiveNodeRadius(d.target.depth, width);
+            // Adjusted spacing between nodes
+            return sourceRadius + targetRadius + (isMobile ? 20 : 40);
+          }))
+        .force('charge', d3.forceManyBody().strength(-300)) // Reduced repulsion
+        .force('center', d3.forceCenter(width * 0.55, height * 0.55))
+        .force('collision', d3.forceCollide().radius(d => getResponsiveNodeRadius(d.depth, width) * 1.02))
+        .force('x', d3.forceX().strength(0.08))
+        .force('y', d3.forceY().strength(0.08));
 
-    gradient.append('stop')
-      .attr('offset', '20%')
-      .attr('style', 'stop-color:rgba(147,112,219,0.6);stop-opacity:0.6');
+      const defs = svg.append('defs');
 
-    gradient.append('stop')
-      .attr('offset', '80%')
-      .attr('style', 'stop-color:rgba(138,43,226,0.6);stop-opacity:0.6');
+      // Gradient for glossy effect
+      const gradient = defs.append('linearGradient')
+        .attr('id', 'glossGradient')
+        .attr('x1', '0%')
+        .attr('x2', '0%')
+        .attr('y1', '0%')
+        .attr('y2', '100%');
 
-    gradient.append('stop')
-      .attr('offset', '100%')
-      .attr('style', 'stop-color:rgba(128,0,128,0.7);stop-opacity:0.7');
+      gradient.append('stop')
+        .attr('offset', '0%')
+        .attr('style', 'stop-color:rgba(255,255,255,0.95);stop-opacity:0.95');
 
-    // Drop shadow filter with purple tint
-    const filter = defs.append('filter')
-      .attr('id', 'dropShadow')
-      .attr('x', '-50%')
-      .attr('y', '-50%')
-      .attr('width', '200%')
-      .attr('height', '200%');
+      gradient.append('stop')
+        .attr('offset', '20%')
+        .attr('style', 'stop-color:rgba(147,112,219,0.6);stop-opacity:0.6');
 
-    filter.append('feGaussianBlur')
-      .attr('in', 'SourceAlpha')
-      .attr('stdDeviation', 5)
-      .attr('result', 'blur');
+      gradient.append('stop')
+        .attr('offset', '80%')
+        .attr('style', 'stop-color:rgba(138,43,226,0.6);stop-opacity:0.6');
 
-    filter.append('feOffset')
-      .attr('in', 'blur')
-      .attr('dx', 4)
-      .attr('dy', 4)
-      .attr('result', 'offsetBlur');
+      gradient.append('stop')
+        .attr('offset', '100%')
+        .attr('style', 'stop-color:rgba(128,0,128,0.7);stop-opacity:0.7');
 
-    filter.append('feComponentTransfer')
-      .append('feFuncA')
-      .attr('type', 'linear')
-      .attr('slope', '0.5');
+      // Drop shadow filter with purple tint
+      const filter = defs.append('filter')
+        .attr('id', 'dropShadow')
+        .attr('x', '-50%')
+        .attr('y', '-50%')
+        .attr('width', '200%')
+        .attr('height', '200%');
 
-    const feMerge = filter.append('feMerge');
-    feMerge.append('feMergeNode')
-      .attr('in', 'offsetBlur');
-    feMerge.append('feMergeNode')
-      .attr('in', 'SourceGraphic');
+      filter.append('feGaussianBlur')
+        .attr('in', 'SourceAlpha')
+        .attr('stdDeviation', 5)
+        .attr('result', 'blur');
 
-    // Glass reflection effect
-    const highlight = defs.append('linearGradient')
-      .attr('id', 'highlight')
-      .attr('x1', '0%')
-      .attr('x2', '0%')
-      .attr('y1', '0%')
-      .attr('y2', '100%');
+      filter.append('feOffset')
+        .attr('in', 'blur')
+        .attr('dx', 4)
+        .attr('dy', 4)
+        .attr('result', 'offsetBlur');
 
-    highlight.append('stop')
-      .attr('offset', '0%')
-      .attr('style', 'stop-color:white;stop-opacity:0.8');
+      filter.append('feComponentTransfer')
+        .append('feFuncA')
+        .attr('type', 'linear')
+        .attr('slope', '0.5');
 
-    highlight.append('stop')
-      .attr('offset', '30%')
-      .attr('style', 'stop-color:white;stop-opacity:0.3');
+      const feMerge = filter.append('feMerge');
+      feMerge.append('feMergeNode')
+        .attr('in', 'offsetBlur');
+      feMerge.append('feMergeNode')
+        .attr('in', 'SourceGraphic');
 
-    highlight.append('stop')
-      .attr('offset', '100%')
-      .attr('style', 'stop-color:white;stop-opacity:0.1');
+      // Glass reflection effect
+      const highlight = defs.append('linearGradient')
+        .attr('id', 'highlight')
+        .attr('x1', '0%')
+        .attr('x2', '0%')
+        .attr('y1', '0%')
+        .attr('y2', '100%');
 
-    // Links with purple gradient
-    const linkGradient = defs.append('linearGradient')
-      .attr('id', 'linkGradient')
-      .attr('gradientUnits', 'userSpaceOnUse');
+      highlight.append('stop')
+        .attr('offset', '0%')
+        .attr('style', 'stop-color:white;stop-opacity:0.8');
 
-    linkGradient.append('stop')
-      .attr('offset', '0%')
-      .attr('style', 'stop-color:rgba(147,112,219,0.6)');
+      highlight.append('stop')
+        .attr('offset', '30%')
+        .attr('style', 'stop-color:white;stop-opacity:0.3');
 
-    linkGradient.append('stop')
-      .attr('offset', '100%')
-      .attr('style', 'stop-color:rgba(138,43,226,0.3)');
+      highlight.append('stop')
+        .attr('offset', '100%')
+        .attr('style', 'stop-color:white;stop-opacity:0.1');
 
-    // Add glass edge effect
-    const glassEdge = defs.append('filter')
-      .attr('id', 'glassEdge')
-      .attr('x', '-50%')
-      .attr('y', '-50%')
-      .attr('width', '200%')
-      .attr('height', '200%');
+      // Links with purple gradient
+      const linkGradient = defs.append('linearGradient')
+        .attr('id', 'linkGradient')
+        .attr('gradientUnits', 'userSpaceOnUse');
 
-    glassEdge.append('feGaussianBlur')
-      .attr('in', 'SourceAlpha')
-      .attr('stdDeviation', '2')
-      .attr('result', 'blur');
+      linkGradient.append('stop')
+        .attr('offset', '0%')
+        .attr('style', 'stop-color:rgba(147,112,219,0.6)');
 
-    glassEdge.append('feComposite')
-      .attr('in', 'SourceGraphic')
-      .attr('in2', 'blur')
-      .attr('operator', 'arithmetic')
-      .attr('k2', '1')
-      .attr('k3', '-1')
-      .attr('result', 'edge');
+      linkGradient.append('stop')
+        .attr('offset', '100%')
+        .attr('style', 'stop-color:rgba(138,43,226,0.3)');
 
-    const links_g = svg.append('g')
-      .selectAll('line')
-      .data(links)
-      .enter()
-      .append('line')
-      .attr('stroke', 'url(#linkGradient)')
-      .attr('stroke-width', 2)
-      .attr('opacity', 0.8);
+      // Add glass edge effect
+      const glassEdge = defs.append('filter')
+        .attr('id', 'glassEdge')
+        .attr('x', '-50%')
+        .attr('y', '-50%')
+        .attr('width', '200%')
+        .attr('height', '200%');
 
-    const nodes_g = svg.append('g')
-      .selectAll('g')
-      .data(nodes)
-      .enter()
-      .append('g')
-      .call(d3.drag<any, any>()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
+      glassEdge.append('feGaussianBlur')
+        .attr('in', 'SourceAlpha')
+        .attr('stdDeviation', '2')
+        .attr('result', 'blur');
 
-    // Base circle with gradient and shadow
-    nodes_g.append('circle')
-      .attr('r', d => getNodeRadius(d.depth))
-      .attr('fill', 'url(#glossGradient)')
-      .attr('filter', 'url(#dropShadow)')
-      .style('stroke', 'rgba(255,255,255,0.8)')
-      .style('stroke-width', '2px');
+      glassEdge.append('feComposite')
+        .attr('in', 'SourceGraphic')
+        .attr('in2', 'blur')
+        .attr('operator', 'arithmetic')
+        .attr('k2', '1')
+        .attr('k3', '-1')
+        .attr('result', 'edge');
 
-    // Glass edge effect
-    nodes_g.append('circle')
-      .attr('r', d => getNodeRadius(d.depth))
-      .attr('filter', 'url(#glassEdge)')
-      .style('fill', 'none')
-      .style('stroke', 'rgba(255,255,255,0.4)')
-      .style('stroke-width', '1px')
-      .style('pointer-events', 'none');
+      const links_g = svg.append('g')
+        .selectAll('line')
+        .data(links)
+        .enter()
+        .append('line')
+        .attr('stroke', 'url(#linkGradient)')
+        .attr('stroke-width', 2)
+        .attr('opacity', 0.8);
 
-    // Highlight overlay for glass effect
-    nodes_g.append('circle')
-      .attr('r', d => getNodeRadius(d.depth))
-      .attr('fill', 'url(#highlight)')
-      .attr('opacity', 0.6)
-      .style('pointer-events', 'none');
+      const nodes_g = svg.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .enter()
+        .append('g')
+        .call(d3.drag<any, any>()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
 
-    // Add text elements for node names with enhanced shadow
-    nodes_g.append('text')
-      .text((d: FamilyNode) => d.name)
-      .attr('text-anchor', 'middle')
-      .attr('dy', '.35em')
-      .attr('fill', '#fff')
-      .attr('filter', 'url(#dropShadow)')
-      .style('font-size', d => `${getNodeFontSize(d.depth)}px`)
-      .style('cursor', isAdmin ? 'pointer' : 'default')
-      .style('text-shadow', '0 1px 3px rgba(0,0,0,0.4)')
-      .style('font-weight', '500')
-      .on('dblclick', (event, d: FamilyNode) => {
-        if (isAdmin) {
-          setEditingNode(d);
-        }
+      // Base circle with gradient and shadow
+      nodes_g.append('circle')
+        .attr('r', d => getResponsiveNodeRadius(d.depth, width))
+        .attr('fill', 'url(#glossGradient)')
+        .attr('filter', 'url(#dropShadow)')
+        .style('stroke', 'rgba(255,255,255,0.8)')
+        .style('stroke-width', isMobile ? '1px' : '2px');
+
+      // Glass edge effect
+      nodes_g.append('circle')
+        .attr('r', d => getResponsiveNodeRadius(d.depth, width))
+        .attr('filter', 'url(#glassEdge)')
+        .style('fill', 'none')
+        .style('stroke', 'rgba(255,255,255,0.4)')
+        .style('stroke-width', '1px')
+        .style('pointer-events', 'none');
+
+      // Highlight overlay for glass effect
+      nodes_g.append('circle')
+        .attr('r', d => getResponsiveNodeRadius(d.depth, width))
+        .attr('fill', 'url(#highlight)')
+        .attr('opacity', 0.6)
+        .style('pointer-events', 'none');
+
+      // Add text elements for node names with enhanced shadow
+      nodes_g.append('text')
+        .text((d: FamilyNode) => d.name)
+        .attr('text-anchor', 'middle')
+        .attr('dy', '.35em')
+        .attr('fill', '#fff')
+        .attr('filter', 'url(#dropShadow)')
+        .style('font-size', d => `${getResponsiveFontSize(d.depth, width)}px`)
+        .style('cursor', isAdmin ? 'pointer' : 'default')
+        .style('text-shadow', '0 1px 3px rgba(0,0,0,0.4)')
+        .style('font-weight', '500')
+        .on('dblclick', (event, d: FamilyNode) => {
+          if (isAdmin) {
+            setEditingNode(d);
+          }
+        });
+
+      if (isAdmin) {
+        // Add '+' button with adjusted positions for root node
+        nodes_g.append('circle')
+          .attr('r', d => getButtonRadius(d.depth))
+          .attr('cx', d => getButtonOffset(d.depth))
+          .attr('cy', d => -getButtonOffset(d.depth))
+          .attr('fill', '#4CAF50')
+          .attr('cursor', 'pointer')
+          .on('click', (event, d: any) => {
+            event.stopPropagation();
+            handleAddChild(d.id);
+          });
+
+        nodes_g.append('text')
+          .attr('x', d => getButtonOffset(d.depth))
+          .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#fff')
+          .attr('pointer-events', 'none')
+          .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
+          .text('+');
+
+        // Add '-' button with adjusted positions for root node
+        nodes_g.append('circle')
+          .attr('r', d => getButtonRadius(d.depth))
+          .attr('cx', d => -getButtonOffset(d.depth))
+          .attr('cy', d => -getButtonOffset(d.depth))
+          .attr('fill', '#f44336')
+          .attr('cursor', 'pointer')
+          .on('click', (event, d: any) => {
+            event.stopPropagation();
+            handleDeleteNode(d.id);
+          });
+
+        nodes_g.append('text')
+          .attr('x', d => -getButtonOffset(d.depth))
+          .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#fff')
+          .attr('pointer-events', 'none')
+          .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
+          .text('-');
+      } else {
+        // Add expand/collapse button
+        nodes_g.append('circle')
+          .attr('class', 'expand-button')
+          .attr('r', d => getResponsiveNodeRadius(d.depth, width) * 0.2) // Smaller relative to larger nodes
+          .attr('cx', 0)
+          .attr('cy', d => getResponsiveNodeRadius(d.depth, width) * 0.8)
+          .attr('fill', d => {
+            const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+            return hasChildren ? '#4CAF50' : 'transparent';
+          })
+          .attr('cursor', 'pointer')
+          .attr('opacity', d => {
+            const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+            return hasChildren ? 1 : 0;
+          })
+          .on('click', (event, d: any) => {
+            event.stopPropagation();
+            toggleNodeExpansion(d.id);
+          });
+
+        nodes_g.append('text')
+          .attr('class', 'expand-icon')
+          .attr('x', 0)
+          .attr('y', d => getResponsiveNodeRadius(d.depth, width) * 0.8)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#fff')
+          .attr('pointer-events', 'none')
+          .style('font-size', d => `${getResponsiveNodeRadius(d.depth, width) * 0.3}px`)
+          .text(d => {
+            const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+            return hasChildren ? (expandedNodes.has(d.id) ? '-' : '+') : '';
+          });
+      }
+
+      simulation.on('tick', () => {
+        // Update link positions
+        links_g
+          .attr('x1', (d: any) => d.source.x)
+          .attr('y1', (d: any) => d.source.y)
+          .attr('x2', (d: any) => d.target.x)
+          .attr('y2', (d: any) => d.target.y);
+
+        // Update node positions
+        nodes_g.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
       });
 
-    if (isAdmin) {
-      // Add '+' button with adjusted positions for root node
-      nodes_g.append('circle')
-        .attr('r', d => getButtonRadius(d.depth))
-        .attr('cx', d => getButtonOffset(d.depth))
-        .attr('cy', d => -getButtonOffset(d.depth))
-        .attr('fill', '#4CAF50')
-        .attr('cursor', 'pointer')
-        .on('click', (event, d: any) => {
-          event.stopPropagation();
-          handleAddChild(d.id);
-        });
+      function dragstarted(event: any) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+      }
 
-      nodes_g.append('text')
-        .attr('x', d => getButtonOffset(d.depth))
-        .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#fff')
-        .attr('pointer-events', 'none')
-        .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
-        .text('+');
+      function dragged(event: any) {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+      }
 
-      // Add '-' button with adjusted positions for root node
-      nodes_g.append('circle')
-        .attr('r', d => getButtonRadius(d.depth))
-        .attr('cx', d => -getButtonOffset(d.depth))
-        .attr('cy', d => -getButtonOffset(d.depth))
-        .attr('fill', '#f44336')
-        .attr('cursor', 'pointer')
-        .on('click', (event, d: any) => {
-          event.stopPropagation();
-          handleDeleteNode(d.id);
-        });
+      function dragended(event: any) {
+        if (!event.active) simulation.alphaTarget(0);
+        event.subject.fx = null;
+        event.subject.fy = null;
+      }
 
-      nodes_g.append('text')
-        .attr('x', d => -getButtonOffset(d.depth))
-        .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#fff')
-        .attr('pointer-events', 'none')
-        .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
-        .text('-');
-    } else {
-      // Add expand/collapse button
-      nodes_g.append('circle')
-        .attr('class', 'expand-button')
-        .attr('r', d => getButtonRadius(d.depth))
-        .attr('cx', 0) // Center horizontally
-        .attr('cy', d => getButtonOffset(d.depth)) // Position below
-        .attr('fill', d => {
-          // Only show expand button if node has children
-          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
-          return hasChildren ? '#4CAF50' : 'transparent';
-        })
-        .attr('cursor', 'pointer')
-        .attr('opacity', d => {
-          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
-          return hasChildren ? 1 : 0;
-        })
-        .on('click', (event, d: any) => {
-          event.stopPropagation();
-          toggleNodeExpansion(d.id);
-        });
-
-      nodes_g.append('text')
-        .attr('class', 'expand-icon')
-        .attr('x', 0) // Center horizontally
-        .attr('y', d => getButtonOffset(d.depth) + 4) // Position below, adjust for text centering
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#fff')
-        .attr('pointer-events', 'none')
-        .style('font-size', d => `${getButtonRadius(d.depth) * 1.5}px`)
-        .text(d => {
-          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
-          return hasChildren ? (expandedNodes.has(d.id) ? '-' : '+') : '';
-        });
-    }
-
-    simulation.on('tick', () => {
-      // Update link positions
-      links_g
-        .attr('x1', (d: any) => d.source.x)
-        .attr('y1', (d: any) => d.source.y)
-        .attr('x2', (d: any) => d.target.x)
-        .attr('y2', (d: any) => d.target.y);
-
-      // Update node positions
-      nodes_g.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
-    });
-
-    function dragstarted(event: any) {
-      if (!event.active) simulation.alphaTarget(0.3).restart();
-      event.subject.fx = event.subject.x;
-      event.subject.fy = event.subject.y;
-    }
-
-    function dragged(event: any) {
-      event.subject.fx = event.x;
-      event.subject.fy = event.y;
-    }
-
-    function dragended(event: any) {
-      if (!event.active) simulation.alphaTarget(0);
-      event.subject.fx = null;
-      event.subject.fy = null;
-    }
-
-    return () => {
-      simulation.stop();
+      return () => {
+        simulation.stop();
+      };
     };
-  }, [isAdmin, familyData, isLoading, error, expandedNodes]);
+
+    // Initial render
+    updateDimensions();
+
+    // Add window resize listener
+    window.addEventListener('resize', updateDimensions);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('resize', updateDimensions);
+    };
+  }, [familyData, expandedNodes, isAdmin, isLoading]);
 
   if (isLoading) {
     return (
@@ -627,7 +720,7 @@ const FamilyTree = () => {
       }}>
         <h1 style={{
           color: 'white',
-          fontSize: '2.5rem',
+          fontSize: window.innerWidth < 768 ? '1.8rem' : '2.5rem',
           margin: '0',
           marginBottom: '5px',
           fontWeight: '600',
@@ -638,7 +731,7 @@ const FamilyTree = () => {
         </h1>
         <p style={{
           color: 'rgba(255,255,255,0.8)',
-          fontSize: '0.9rem',
+          fontSize: window.innerWidth < 768 ? '0.8rem' : '0.9rem',
           margin: '0',
           fontStyle: 'italic',
           textShadow: '0 1px 2px rgba(0,0,0,0.2)',
@@ -652,9 +745,9 @@ const FamilyTree = () => {
           onClick={showAllNodes}
           style={{
             position: 'absolute',
-            top: '100px',
-            right: '20px',
-            padding: '10px 20px',
+            top: window.innerWidth < 768 ? '90px' : '100px',
+            right: window.innerWidth < 768 ? '10px' : '20px',
+            padding: window.innerWidth < 768 ? '8px 16px' : '10px 20px',
             backgroundColor: 'rgba(147,112,219,0.8)',
             color: 'white',
             border: 'none',
@@ -663,9 +756,10 @@ const FamilyTree = () => {
             boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
             zIndex: 1000,
             backdropFilter: 'blur(5px)',
+            fontSize: window.innerWidth < 768 ? '0.9rem' : '1rem',
           }}
         >
-          Show All
+          Herkesi Gör
         </button>
       )}
       <svg
