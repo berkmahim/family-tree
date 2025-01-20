@@ -43,16 +43,24 @@ const EditModal = ({ node, onSave, onCancel }: EditModalProps) => {
   );
 };
 
+interface FamilyNode {
+  id: string;
+  name: string;
+  parentId: string | null;
+  isExpanded?: boolean;
+}
+
 const FamilyTree = () => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [familyData, setFamilyData] = useState<{ nodes: FamilyNode[], links: FamilyLink[] }>({ 
-    nodes: [{ id: '1', name: 'Beşo', children: [] }], 
+    nodes: [{ id: '1', name: 'Beşo', parentId: null, children: [] }], 
     links: [] 
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingNode, setEditingNode] = useState<FamilyNode | null>(null);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['1'])); // Root is initially expanded
 
   // Fetch family data
   const fetchFamilyData = async () => {
@@ -69,7 +77,7 @@ const FamilyTree = () => {
 
       if (!data.nodes || data.nodes.length === 0) {
         setFamilyData({ 
-          nodes: [{ id: '1', name: 'Beşo', children: [] }], 
+          nodes: [{ id: '1', name: 'Beşo', parentId: null, children: [] }], 
           links: [] 
         });
       } else {
@@ -170,47 +178,274 @@ const FamilyTree = () => {
     }
   };
 
+  const toggleNodeExpansion = (nodeId: string) => {
+    setExpandedNodes(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(nodeId)) {
+        // When collapsing, remove this node and all its descendants
+        const nodesToRemove = new Set<string>();
+        const addDescendants = (id: string) => {
+          nodesToRemove.add(id);
+          familyData.nodes
+            .filter(node => node.parentId === id)
+            .forEach(child => addDescendants(child.id));
+        };
+        addDescendants(nodeId);
+        
+        // Remove all descendants from expanded nodes
+        nodesToRemove.forEach(id => newSet.delete(id));
+      } else {
+        newSet.add(nodeId);
+      }
+      return newSet;
+    });
+  };
+
+  const showAllNodes = () => {
+    const allNodeIds = familyData.nodes.map(node => node.id);
+    setExpandedNodes(new Set(allNodeIds));
+  };
+
+  // Get visible nodes based on user type and expanded state
+  const getVisibleNodes = () => {
+    // Admin sees all nodes
+    if (isAdmin) {
+      return familyData.nodes;
+    }
+
+    // Regular users see only expanded nodes
+    const visibleNodes = new Set<string>();
+    const visibleNodesWithParents = new Set<string>();
+    
+    // Always show root
+    visibleNodes.add('1');
+    visibleNodesWithParents.add('1');
+    
+    // For each expanded node, show its immediate children
+    expandedNodes.forEach(nodeId => {
+      familyData.nodes
+        .filter(node => node.parentId === nodeId)
+        .forEach(node => {
+          visibleNodes.add(node.id);
+          visibleNodesWithParents.add(node.id);
+          // Also add the parent to ensure tree connectivity
+          if (node.parentId) {
+            visibleNodesWithParents.add(node.parentId);
+          }
+        });
+    });
+
+    // First get all visible nodes
+    const nodesToShow = familyData.nodes.filter(node => visibleNodes.has(node.id));
+    
+    // Then ensure we include all parent nodes in the path to root
+    nodesToShow.forEach(node => {
+      let currentNode = node;
+      while (currentNode.parentId) {
+        visibleNodesWithParents.add(currentNode.parentId);
+        currentNode = familyData.nodes.find(n => n.id === currentNode.parentId)!;
+      }
+    });
+
+    // Return nodes that are either visible or are parents of visible nodes
+    return familyData.nodes.filter(node => visibleNodesWithParents.has(node.id));
+  };
+
   useEffect(() => {
     if (!svgRef.current || isLoading) return;
 
     const width = window.innerWidth;
     const height = window.innerHeight;
 
-    d3.select(svgRef.current).selectAll("*").remove();
-
+    // Create SVG element
     const svg = d3.select(svgRef.current)
       .attr('width', width)
       .attr('height', height);
 
-    if (error) {
-      svg.append('text')
-        .attr('x', width / 2)
-        .attr('y', height / 2)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#ff0000')
-        .text(error);
-      return;
-    }
+    // Clear previous content
+    svg.selectAll('*').remove();
 
-    const simulation = d3.forceSimulation<any>(familyData.nodes)
-      .force('link', d3.forceLink(familyData.links)
+    // Get visible nodes based on user type
+    const visibleNodes = getVisibleNodes();
+
+    // Create a hierarchical layout
+    const hierarchy = d3.stratify<FamilyNode>()
+      .id(d => d.id)
+      .parentId(d => d.parentId)(visibleNodes);
+
+    // Create a tree layout
+    const treeLayout = d3.tree<FamilyNode>()
+      .size([width - 200, height - 200]);
+
+    const root = treeLayout(hierarchy);
+
+    // Calculate initial positions based on tree layout
+    const nodes = root.descendants().map(d => ({
+      ...d.data,
+      x: d.x + width / 2,
+      y: d.y + 100,
+      depth: d.depth
+    }));
+
+    const links = root.links().map(d => ({
+      source: nodes.find(n => n.id === d.source.data.id)!,
+      target: nodes.find(n => n.id === d.target.data.id)!
+    }));
+
+    // Helper function to get node radius based on depth
+    const getNodeRadius = (depth: number) => {
+      const baseRadius = 50;
+      return Math.max(baseRadius * Math.pow(0.8, depth), 30);
+    };
+
+    // Helper function to get expand button radius
+    const getButtonRadius = (depth: number) => {
+      return getNodeRadius(depth) * 0.25;
+    };
+
+    // Helper function to get button vertical offset
+    const getButtonOffset = (depth: number) => {
+      return getNodeRadius(depth) * 0.7; // Position below the node
+    };
+
+    // Helper function to get font size based on depth
+    const getNodeFontSize = (depth: number) => {
+      const baseSize = 16;
+      return Math.max(baseSize * Math.pow(0.9, depth), 12);
+    };
+
+    const simulation = d3.forceSimulation<any>(nodes)
+      .force('link', d3.forceLink(links)
         .id((d: any) => d.id)
-        .distance(100))
+        .distance(200)) // Fixed longer distance
       .force('charge', d3.forceManyBody().strength(-300))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(50));
+      .force('collision', d3.forceCollide().radius(d => getNodeRadius(d.depth) + 30))
+      .force('x', d3.forceX().strength(0.1))
+      .force('y', d3.forceY().strength(0.1));
 
-    const links = svg.append('g')
+    const defs = svg.append('defs');
+
+    // Gradient for glossy effect
+    const gradient = defs.append('linearGradient')
+      .attr('id', 'glossGradient')
+      .attr('x1', '0%')
+      .attr('x2', '0%')
+      .attr('y1', '0%')
+      .attr('y2', '100%');
+
+    gradient.append('stop')
+      .attr('offset', '0%')
+      .attr('style', 'stop-color:rgba(255,255,255,0.95);stop-opacity:0.95');
+
+    gradient.append('stop')
+      .attr('offset', '20%')
+      .attr('style', 'stop-color:rgba(147,112,219,0.6);stop-opacity:0.6');
+
+    gradient.append('stop')
+      .attr('offset', '80%')
+      .attr('style', 'stop-color:rgba(138,43,226,0.6);stop-opacity:0.6');
+
+    gradient.append('stop')
+      .attr('offset', '100%')
+      .attr('style', 'stop-color:rgba(128,0,128,0.7);stop-opacity:0.7');
+
+    // Drop shadow filter with purple tint
+    const filter = defs.append('filter')
+      .attr('id', 'dropShadow')
+      .attr('x', '-50%')
+      .attr('y', '-50%')
+      .attr('width', '200%')
+      .attr('height', '200%');
+
+    filter.append('feGaussianBlur')
+      .attr('in', 'SourceAlpha')
+      .attr('stdDeviation', 5)
+      .attr('result', 'blur');
+
+    filter.append('feOffset')
+      .attr('in', 'blur')
+      .attr('dx', 4)
+      .attr('dy', 4)
+      .attr('result', 'offsetBlur');
+
+    filter.append('feComponentTransfer')
+      .append('feFuncA')
+      .attr('type', 'linear')
+      .attr('slope', '0.5');
+
+    const feMerge = filter.append('feMerge');
+    feMerge.append('feMergeNode')
+      .attr('in', 'offsetBlur');
+    feMerge.append('feMergeNode')
+      .attr('in', 'SourceGraphic');
+
+    // Glass reflection effect
+    const highlight = defs.append('linearGradient')
+      .attr('id', 'highlight')
+      .attr('x1', '0%')
+      .attr('x2', '0%')
+      .attr('y1', '0%')
+      .attr('y2', '100%');
+
+    highlight.append('stop')
+      .attr('offset', '0%')
+      .attr('style', 'stop-color:white;stop-opacity:0.8');
+
+    highlight.append('stop')
+      .attr('offset', '30%')
+      .attr('style', 'stop-color:white;stop-opacity:0.3');
+
+    highlight.append('stop')
+      .attr('offset', '100%')
+      .attr('style', 'stop-color:white;stop-opacity:0.1');
+
+    // Links with purple gradient
+    const linkGradient = defs.append('linearGradient')
+      .attr('id', 'linkGradient')
+      .attr('gradientUnits', 'userSpaceOnUse');
+
+    linkGradient.append('stop')
+      .attr('offset', '0%')
+      .attr('style', 'stop-color:rgba(147,112,219,0.6)');
+
+    linkGradient.append('stop')
+      .attr('offset', '100%')
+      .attr('style', 'stop-color:rgba(138,43,226,0.3)');
+
+    // Add glass edge effect
+    const glassEdge = defs.append('filter')
+      .attr('id', 'glassEdge')
+      .attr('x', '-50%')
+      .attr('y', '-50%')
+      .attr('width', '200%')
+      .attr('height', '200%');
+
+    glassEdge.append('feGaussianBlur')
+      .attr('in', 'SourceAlpha')
+      .attr('stdDeviation', '2')
+      .attr('result', 'blur');
+
+    glassEdge.append('feComposite')
+      .attr('in', 'SourceGraphic')
+      .attr('in2', 'blur')
+      .attr('operator', 'arithmetic')
+      .attr('k2', '1')
+      .attr('k3', '-1')
+      .attr('result', 'edge');
+
+    const links_g = svg.append('g')
       .selectAll('line')
-      .data(familyData.links)
+      .data(links)
       .enter()
       .append('line')
-      .attr('stroke', '#999')
-      .attr('stroke-width', 2);
+      .attr('stroke', 'url(#linkGradient)')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.8);
 
-    const nodes = svg.append('g')
+    const nodes_g = svg.append('g')
       .selectAll('g')
-      .data(familyData.nodes)
+      .data(nodes)
       .enter()
       .append('g')
       .call(d3.drag<any, any>()
@@ -218,19 +453,41 @@ const FamilyTree = () => {
         .on('drag', dragged)
         .on('end', dragended));
 
-    nodes.append('circle')
-      .attr('r', 30)
-      .attr('fill', '#69b3a2')
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 2);
+    // Base circle with gradient and shadow
+    nodes_g.append('circle')
+      .attr('r', d => getNodeRadius(d.depth))
+      .attr('fill', 'url(#glossGradient)')
+      .attr('filter', 'url(#dropShadow)')
+      .style('stroke', 'rgba(255,255,255,0.8)')
+      .style('stroke-width', '2px');
 
-    // Add text elements for node names
-    nodes.append('text')
+    // Glass edge effect
+    nodes_g.append('circle')
+      .attr('r', d => getNodeRadius(d.depth))
+      .attr('filter', 'url(#glassEdge)')
+      .style('fill', 'none')
+      .style('stroke', 'rgba(255,255,255,0.4)')
+      .style('stroke-width', '1px')
+      .style('pointer-events', 'none');
+
+    // Highlight overlay for glass effect
+    nodes_g.append('circle')
+      .attr('r', d => getNodeRadius(d.depth))
+      .attr('fill', 'url(#highlight)')
+      .attr('opacity', 0.6)
+      .style('pointer-events', 'none');
+
+    // Add text elements for node names with enhanced shadow
+    nodes_g.append('text')
       .text((d: FamilyNode) => d.name)
       .attr('text-anchor', 'middle')
       .attr('dy', '.35em')
       .attr('fill', '#fff')
+      .attr('filter', 'url(#dropShadow)')
+      .style('font-size', d => `${getNodeFontSize(d.depth)}px`)
       .style('cursor', isAdmin ? 'pointer' : 'default')
+      .style('text-shadow', '0 1px 3px rgba(0,0,0,0.4)')
+      .style('font-weight', '500')
       .on('dblclick', (event, d: FamilyNode) => {
         if (isAdmin) {
           setEditingNode(d);
@@ -238,11 +495,11 @@ const FamilyTree = () => {
       });
 
     if (isAdmin) {
-      // Add '+' button
-      nodes.append('circle')
-        .attr('r', 10)
-        .attr('cx', 25)
-        .attr('cy', -25)
+      // Add '+' button with adjusted positions for root node
+      nodes_g.append('circle')
+        .attr('r', d => getButtonRadius(d.depth))
+        .attr('cx', d => getButtonOffset(d.depth))
+        .attr('cy', d => -getButtonOffset(d.depth))
         .attr('fill', '#4CAF50')
         .attr('cursor', 'pointer')
         .on('click', (event, d: any) => {
@@ -250,19 +507,20 @@ const FamilyTree = () => {
           handleAddChild(d.id);
         });
 
-      nodes.append('text')
-        .attr('x', 25)
-        .attr('y', -21)
+      nodes_g.append('text')
+        .attr('x', d => getButtonOffset(d.depth))
+        .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
         .attr('text-anchor', 'middle')
         .attr('fill', '#fff')
         .attr('pointer-events', 'none')
+        .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
         .text('+');
 
-      // Add '-' button
-      nodes.append('circle')
-        .attr('r', 10)
-        .attr('cx', -25)
-        .attr('cy', -25)
+      // Add '-' button with adjusted positions for root node
+      nodes_g.append('circle')
+        .attr('r', d => getButtonRadius(d.depth))
+        .attr('cx', d => -getButtonOffset(d.depth))
+        .attr('cy', d => -getButtonOffset(d.depth))
         .attr('fill', '#f44336')
         .attr('cursor', 'pointer')
         .on('click', (event, d: any) => {
@@ -270,23 +528,60 @@ const FamilyTree = () => {
           handleDeleteNode(d.id);
         });
 
-      nodes.append('text')
-        .attr('x', -25)
-        .attr('y', -21)
+      nodes_g.append('text')
+        .attr('x', d => -getButtonOffset(d.depth))
+        .attr('y', d => -getButtonOffset(d.depth) + getButtonRadius(d.depth) * 0.4)
         .attr('text-anchor', 'middle')
         .attr('fill', '#fff')
         .attr('pointer-events', 'none')
+        .style('font-size', d => `${getButtonRadius(d.depth) * 1.2}px`)
         .text('-');
+    } else {
+      // Add expand/collapse button
+      nodes_g.append('circle')
+        .attr('class', 'expand-button')
+        .attr('r', d => getButtonRadius(d.depth))
+        .attr('cx', 0) // Center horizontally
+        .attr('cy', d => getButtonOffset(d.depth)) // Position below
+        .attr('fill', d => {
+          // Only show expand button if node has children
+          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+          return hasChildren ? '#4CAF50' : 'transparent';
+        })
+        .attr('cursor', 'pointer')
+        .attr('opacity', d => {
+          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+          return hasChildren ? 1 : 0;
+        })
+        .on('click', (event, d: any) => {
+          event.stopPropagation();
+          toggleNodeExpansion(d.id);
+        });
+
+      nodes_g.append('text')
+        .attr('class', 'expand-icon')
+        .attr('x', 0) // Center horizontally
+        .attr('y', d => getButtonOffset(d.depth) + 4) // Position below, adjust for text centering
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#fff')
+        .attr('pointer-events', 'none')
+        .style('font-size', d => `${getButtonRadius(d.depth) * 1.5}px`)
+        .text(d => {
+          const hasChildren = familyData.nodes.some(node => node.parentId === d.id);
+          return hasChildren ? (expandedNodes.has(d.id) ? '-' : '+') : '';
+        });
     }
 
     simulation.on('tick', () => {
-      links
+      // Update link positions
+      links_g
         .attr('x1', (d: any) => d.source.x)
         .attr('y1', (d: any) => d.source.y)
         .attr('x2', (d: any) => d.target.x)
         .attr('y2', (d: any) => d.target.y);
 
-      nodes.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+      // Update node positions
+      nodes_g.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
     });
 
     function dragstarted(event: any) {
@@ -309,7 +604,7 @@ const FamilyTree = () => {
     return () => {
       simulation.stop();
     };
-  }, [isAdmin, familyData, isLoading, error]);
+  }, [isAdmin, familyData, isLoading, error, expandedNodes]);
 
   if (isLoading) {
     return (
@@ -320,8 +615,68 @@ const FamilyTree = () => {
   }
 
   return (
-    <div className="w-full h-screen bg-gray-900">
-      <svg ref={svgRef} className="w-full h-full"></svg>
+    <div style={{ width: '100%', height: '100vh', overflow: 'hidden', position: 'relative' }}>
+      <div style={{
+        position: 'absolute',
+        top: '20px',
+        left: '0',
+        right: '0',
+        padding: '0 20px',
+        zIndex: 1000,
+        textAlign: 'center'
+      }}>
+        <h1 style={{
+          color: 'white',
+          fontSize: '2.5rem',
+          margin: '0',
+          marginBottom: '5px',
+          fontWeight: '600',
+          textShadow: '0 2px 4px rgba(0,0,0,0.3)',
+          fontFamily: 'Arial, sans-serif',
+        }}>
+          MAHİM AİLESİ
+        </h1>
+        <p style={{
+          color: 'rgba(255,255,255,0.8)',
+          fontSize: '0.9rem',
+          margin: '0',
+          fontStyle: 'italic',
+          textShadow: '0 1px 2px rgba(0,0,0,0.2)',
+        }}>
+          Berk & Burak Mahim tarafından geliştirilmiştir
+        </p>
+      </div>
+
+      {!isAdmin && (
+        <button
+          onClick={showAllNodes}
+          style={{
+            position: 'absolute',
+            top: '100px',
+            right: '20px',
+            padding: '10px 20px',
+            backgroundColor: 'rgba(147,112,219,0.8)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: 'pointer',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+            zIndex: 1000,
+            backdropFilter: 'blur(5px)',
+          }}
+        >
+          Show All
+        </button>
+      )}
+      <svg
+        ref={svgRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          cursor: 'grab',
+          backgroundColor: '#1a1b26'
+        }}
+      />
       {editingNode && (
         <EditModal
           node={editingNode}
